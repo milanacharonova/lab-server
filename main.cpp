@@ -44,7 +44,6 @@ private:
     boost::asio::io_context io_context;
     tcp::acceptor acceptor;
     vector<shared_ptr<tcp::socket>> clients;
-    // Добавлен мьютекс для защиты операций с базой данных
 public:
     mutex clients_mutex;
     mutex db_mutex;
@@ -63,11 +62,16 @@ public:
                     lock_guard<mutex> lock(clients_mutex);
                     clients.push_back(socket);
                 }
-                show_menu(socket);
-                user_input(socket);
+                next_command(socket); // Запускаем цикл обработки команд
             }
             accept_connections();
         });
+    }
+
+    // Основной цикл обработки команд для клиента
+    void next_command(shared_ptr<tcp::socket> socket) {
+        show_menu(socket);
+        wait_for_command(socket);
     }
 
     void show_menu(shared_ptr<tcp::socket> socket) {
@@ -83,7 +87,8 @@ public:
             [](const boost::system::error_code&, size_t) {});
     }
 
-    void user_input(shared_ptr<tcp::socket> socket) {
+    // Ожидание команды от клиента
+    void wait_for_command(shared_ptr<tcp::socket> socket) {
         auto buffer = make_shared<string>(1024, '\0');
         socket->async_read_some(boost::asio::buffer(*buffer), [this, socket, buffer](const boost::system::error_code& ec, size_t bytes_transferred) {
             if (!ec && bytes_transferred > 0) {
@@ -97,12 +102,15 @@ public:
                     car taxi;
                     if (input == "1") {
                         taxi.display(socket, this);
+                        return; // Команда обрабатывается асинхронно, выход из функции
                     }
                     else if (input == "2") {
                         taxi.add(socket, this);
+                        return;
                     }
                     else if (input == "3") {
                         taxi.del(socket, this);
+                        return;
                     }
                     else if (input == "6") {
                         string goodbye = "Goodbye!\n";
@@ -111,27 +119,30 @@ public:
                                 boost::system::error_code close_ec;
                                 socket->close(close_ec);
                             });
+                        remove_client(socket);
                         return;
                     }
                     else {
                         string error = "Unknown command. Try again:\n";
                         boost::asio::async_write(*socket, boost::asio::buffer(error),
                             [this, socket](const boost::system::error_code&, size_t) {
-                                this->show_menu(socket);
+                                this->next_command(socket); // Повторное отображение меню
                             });
+                        return;
                     }
                 }
             }
-            else {
-                cout << "Клиент отключился:" << socket->remote_endpoint() << endl;
-                {
-                    lock_guard<mutex> lock(this->clients_mutex);
-                    this->clients.erase(remove(this->clients.begin(), this->clients.end(), socket), this->clients.end());
-                }
-                boost::system::error_code close_ec;
-                socket->close(close_ec);
-            }
+            // Обработка отключения клиента
+            cout << "Клиент отключился:" << socket->remote_endpoint() << endl;
+            remove_client(socket);
+            boost::system::error_code close_ec;
+            socket->close(close_ec);
         });
+    }
+
+    void remove_client(shared_ptr<tcp::socket> socket) {
+        lock_guard<mutex> lock(clients_mutex);
+        clients.erase(remove(clients.begin(), clients.end(), socket), clients.end());
     }
 
     void run() {
@@ -153,6 +164,8 @@ public:
                         this->ip_input(socket, callback);
                     }
                 } else {
+                    cout << "Ошибка при чтении данных от клиента" << endl;
+                    remove_client(socket);
                     boost::system::error_code close_ec;
                     socket->close(close_ec);
                 }
@@ -161,7 +174,6 @@ public:
 };
 
 void car::display(shared_ptr<tcp::socket> socket, server* srv) {
-    // Используем мьютекс сервера для защиты доступа к файлу
     std::lock_guard<std::mutex> lock(srv->db_mutex);
     string response = "-------------------------------\n";
     ifstream file("data.txt");
@@ -186,7 +198,7 @@ void car::display(shared_ptr<tcp::socket> socket, server* srv) {
 
     boost::asio::async_write(*socket, boost::asio::buffer(response),
         [srv, socket](const boost::system::error_code&, size_t) {
-            srv->show_menu(socket);
+            srv->next_command(socket); // Возврат в главное меню после выполнения
         });
 }
 
@@ -202,7 +214,6 @@ void car::add(shared_ptr<tcp::socket> socket, server* srv) {
 
                     if (iss >> brand >> model >> km >> cu) {
                         {
-                            // Используем мьютекс сервера для защиты записи в файл
                             std::lock_guard<std::mutex> lock(srv->db_mutex);
                             ofstream file("data.txt", ios::app);
                             if (file.is_open()) {
@@ -213,22 +224,23 @@ void car::add(shared_ptr<tcp::socket> socket, server* srv) {
                         string response = "Car added successfully!\n";
                         boost::asio::async_write(*socket, boost::asio::buffer(response),
                             [srv, socket](const boost::system::error_code&, size_t) {
-                                srv->show_menu(socket);
+                                srv->next_command(socket); // Возврат в меню
                             });
                     } else {
                         string error = "Invalid format. Use: brand model km user\n";
                         boost::asio::async_write(*socket, boost::asio::buffer(error),
                             [this, socket, srv](const boost::system::error_code&, size_t) {
-                                this->add(socket, srv);
+                                this->add(socket, srv); // Повторный запрос данных
                             });
                     }
                 });
+            } else {
+                srv->remove_client(socket);
             }
         });
 }
 
 void car::del(shared_ptr<tcp::socket> socket, server* srv) {
-    // Используем мьютекс сервера для защиты чтения файла
     std::lock_guard<std::mutex> lock(srv->db_mutex);
     ifstream file("data.txt");
     vector<car> cars;
@@ -246,12 +258,11 @@ void car::del(shared_ptr<tcp::socket> socket, server* srv) {
         string response = "Database is empty. Nothing to delete.\n";
         boost::asio::async_write(*socket, boost::asio::buffer(response),
             [srv, socket](const boost::system::error_code&, size_t) {
-                srv->show_menu(socket);
+                srv->next_command(socket); // Возврат в меню
             });
         return;
     }
 
-    // Показываем список машин
     string list = "-------------------------------\n";
     for (size_t i = 0; i < cars.size(); i++) {
         list += to_string(i) + ") " + cars[i]._brand + " " + cars[i]._model +
@@ -270,13 +281,12 @@ void car::del(shared_ptr<tcp::socket> socket, server* srv) {
                             string error = "Invalid number. Try again:\n";
                             boost::asio::async_write(*socket, boost::asio::buffer(error),
                                 [this, socket, srv, cars](const boost::system::error_code&, size_t) {
-                                    this->del(socket, srv); // Перезапускаем удаление
+                                    this->del(socket, srv); // Повторный запрос
                                 });
                             return;
                         }
 
                         {
-                            // Используем мьютекс сервера для защиты записи в файл
                             std::lock_guard<std::mutex> lock(srv->db_mutex);
                             ofstream file("data.txt");
                             for (size_t i = 0; i < cars.size(); i++) {
@@ -290,16 +300,18 @@ void car::del(shared_ptr<tcp::socket> socket, server* srv) {
                         string response = "Car deleted successfully!\n";
                         boost::asio::async_write(*socket, boost::asio::buffer(response),
                             [srv, socket](const boost::system::error_code&, size_t) {
-                                srv->show_menu(socket);
+                                srv->next_command(socket); // Возврат в меню
                             });
                     } catch (...) {
                         string error = "Invalid input. Enter a number:\n";
                         boost::asio::async_write(*socket, boost::asio::buffer(error),
                             [this, socket, srv, cars](const boost::system::error_code&, size_t) {
-                                this->del(socket, srv); // Перезапускаем удаление
+                                this->del(socket, srv); // Повторный запрос
                             });
                     }
                 });
+            } else {
+                srv->remove_client(socket);
             }
         });
 }
@@ -314,6 +326,8 @@ int main() {
 
         cout << "Сервер работает в фоновом режиме. Нажмите Enter для завершения..." << endl;
         cin.get();
+
+        // Остановка сервера
         server_thread.join();
 
     } catch (const exception& e) {
