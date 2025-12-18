@@ -79,8 +79,7 @@ public:
                       "1 - Display all cars\n"
                       "2 - Add car\n"
                       "3 - Delete car\n"
-                      "4 - Edit car\n"
-                      "6 - Exit\n"
+                      "4 - Exit\n"
                       "-------------------------\n"
                       "Enter your choice: ";
         boost::asio::async_write(*socket, boost::asio::buffer(menu),
@@ -112,7 +111,7 @@ public:
                         taxi.del(socket, this);
                         return;
                     }
-                    else if (input == "6") {
+                    else if (input == "4") {
                         string goodbye = "Goodbye!\n";
                         boost::asio::async_write(*socket, boost::asio::buffer(goodbye),
                             [socket](const boost::system::error_code&, size_t) {
