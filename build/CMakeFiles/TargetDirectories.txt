@@ -1,0 +1,5 @@
+/home/japrocar/123/build/CMakeFiles/server.dir
+/home/japrocar/123/build/CMakeFiles/tests.dir
+/home/japrocar/123/build/CMakeFiles/test.dir
+/home/japrocar/123/build/CMakeFiles/edit_cache.dir
+/home/japrocar/123/build/CMakeFiles/rebuild_cache.dir
