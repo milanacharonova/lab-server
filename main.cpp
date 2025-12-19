@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <functional>
 #include <sstream>
+#include <syslog.h>
 
 using namespace std;
 using boost::asio::ip::tcp;
@@ -50,6 +51,7 @@ public:
     server(uint16_t port) : acceptor(io_context, tcp::endpoint(tcp::v4(), port)) {
         cout << "Сервер запущен на порту:" << port << endl;
         cout << "-------------------------------" << endl;
+        syslog(LOG_INFO, "Server started on port: %d", port);
         accept_connections();
     }
 
@@ -58,6 +60,9 @@ public:
         acceptor.async_accept(*socket, [this, socket](const boost::system::error_code& ec) {
             if (!ec) {
                 cout << "Новое подключение:" << socket->remote_endpoint() << endl;
+                auto ep = socket->remote_endpoint();
+                std::string ip_port = ep.address().to_string() + ":" + std::to_string(ep.port());
+                syslog(LOG_INFO, "New user %s", ip_port.c_str());
                 {
                     lock_guard<mutex> lock(clients_mutex);
                     clients.push_back(socket);
@@ -129,10 +134,14 @@ public:
                             });
                         return;
                     }
+                    syslog(LOG_INFO, "user entered %s", input.c_str());
                 }
             }
             // Обработка отключения клиента
             cout << "Клиент отключился:" << socket->remote_endpoint() << endl;
+            auto ep = socket->remote_endpoint();
+            std::string ip_port = ep.address().to_string() + ":" + std::to_string(ep.port());
+            syslog(LOG_INFO, "User disconnected %s", ip_port.c_str());
             remove_client(socket);
             boost::system::error_code close_ec;
             socket->close(close_ec);
@@ -164,6 +173,7 @@ public:
                     }
                 } else {
                     cout << "Ошибка при чтении данных от клиента" << endl;
+                    syslog(LOG_ERR, "Error while reading client");
                     remove_client(socket);
                     boost::system::error_code close_ec;
                     socket->close(close_ec);
@@ -317,6 +327,7 @@ void car::del(shared_ptr<tcp::socket> socket, server* srv) {
 
 int main() {
     try {
+        openlog("ServerLogs", LOG_PID, LOG_USER);
         const uint16_t port = 15001;
         server server(port);
         thread server_thread([&server]() {
@@ -331,7 +342,9 @@ int main() {
 
     } catch (const exception& e) {
         cerr << "Исключение: " << e.what() << endl;
+        closelog();
         return 1;
     }
+    closelog();
     return 0;
 }
